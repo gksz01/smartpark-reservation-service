@@ -1,0 +1,3 @@
+import {it,expect} from 'vitest';
+import {completeContract} from '../src/api/openapi';
+it('contratos HTTP possuem operações explícitas, corpos obrigatórios e respostas',()=>{const doc=completeContract({info:{title:'test',version:'1'},openapi:'3.0.0',paths:{}} as any,'booking');expect(Object.keys(doc.paths).length).toBeGreaterThanOrEqual(5);expect(doc.paths).not.toHaveProperty('/{path}');for(const item of Object.values(doc.paths))for(const operation of Object.values(item!)){expect(operation.responses).toBeDefined();expect(operation.responses['503']).toBeDefined();if(operation.requestBody)expect(operation.requestBody.required).toBe(true);}expect(doc.components?.schemas).toHaveProperty('Error');});

@@ -2,21 +2,24 @@ import { randomUUID } from 'node:crypto';
 import { Actor,DomainError,own,requireAdmin } from '../../domain/errors';
 import { available,amount,Capacity,IntegrationEvent,peak,period,Reservation } from '../../domain/reservation';
 import { CatalogClient,ReservationStore,UnitOfWork } from '../ports';
+import {ListReservations} from './ListReservations';
+import {GetReservation} from './GetReservation';
+import {ConfigureCapacity} from './ConfigureCapacity';
+import {GetAvailability} from './GetAvailability';
+import {CreateReservation} from './CreateReservation';
+import {UpdateReservation} from './UpdateReservation';
+import {CancelReservation} from './CancelReservation';
+import {PayReservation} from './PayReservation';
+
+/** Composition facade; business logic lives in individual feature slices. */
 export class Reservations{
  constructor(private store:ReservationStore,private catalog:CatalogClient){}
- list(actor:Actor){return this.store.list(actor.role==='admin'?undefined:actor.sub);}
- async get(actor:Actor,id:string){const r=await this.store.get(id);if(!r)throw new DomainError(404,'Reserva não encontrada.');own(actor,r.userId);return r;}
- async capacity(actor:Actor,value:Capacity,token:string){requireAdmin(actor);await this.catalog.verify(value.parkingId,undefined,token);return this.store.transact(value.parkingId,async tx=>{const rows=await tx.reservations();if(peak(rows.filter(r=>Date.parse(r.end)>Date.now()))>value.capacity)throw new DomainError(409,'Capacidade inferior às reservas existentes.');await tx.setCapacity(value);return value;});}
- async availability(start:string,end:string){period(start,end);const configs=await this.store.capacities();const rows=await this.store.list();return configs.map(c=>({...c,available:available(c,rows.filter(r=>r.parkingId===c.parkingId),start,end),start,end}));}
- async create(actor:Actor,input:{parkingId:string;vehicleId:string;start:string;end:string},token:string,correlationId:string){
-  period(input.start,input.end);await this.catalog.verify(input.parkingId,input.vehicleId,token);
-  return this.store.transact(input.parkingId,async tx=>{const config=await tx.capacity();if(!config)throw new DomainError(409,'Estacionamento ainda sem capacidade configurada.');
-   if(available(config,await tx.reservations(),input.start,input.end)<1)throw new DomainError(409,'Sem capacidade para esse período.');
-   const value:Reservation={...input,id:randomUUID(),userId:actor.sub,status:'reserved',amountCents:amount(input.start,input.end,config.hourlyRateCents),createdAt:new Date().toISOString()};await tx.save(value);await this.emit(tx,value,'ReservaCriada',correlationId);return value;
-  });
- }
- async update(actor:Actor,id:string,input:{start:string;end:string},correlationId:string){period(input.start,input.end);const existing=await this.get(actor,id);return this.store.transact(existing.parkingId,async tx=>{const rows=await tx.reservations();const value=rows.find(r=>r.id===id)!;own(actor,value.userId);if(value.status!=='reserved')throw new DomainError(409,'Somente reservas não pagas podem ser alteradas.');const config=await tx.capacity();if(!config)throw new DomainError(409,'Capacidade indisponível.');if(available(config,rows.filter(r=>r.id!==id),input.start,input.end)<1)throw new DomainError(409,'Sem capacidade para esse período.');const changed={...value,...input,amountCents:amount(input.start,input.end,config.hourlyRateCents)};await tx.save(changed);return changed;});}
- async cancel(actor:Actor,id:string,correlationId:string){const existing=await this.get(actor,id);return this.store.transact(existing.parkingId,async tx=>{const value=(await tx.reservations()).find(r=>r.id===id)!;own(actor,value.userId);if(value.status==='cancelled')return value;if(Date.parse(value.start)<=Date.now())throw new DomainError(409,'Não é possível cancelar uma reserva já iniciada.');const changed={...value,status:'cancelled' as const};await tx.save(changed);await this.emit(tx,changed,'ReservaCancelada',correlationId);return changed;});}
- async pay(actor:Actor,id:string,result:'approved'|'declined',correlationId:string){const existing=await this.get(actor,id);return this.store.transact(existing.parkingId,async tx=>{const value=(await tx.reservations()).find(r=>r.id===id)!;own(actor,value.userId);if(value.status==='cancelled')throw new DomainError(409,'Reserva cancelada.');if(value.status==='paid')return {reservation:value,paymentStatus:'approved',simulated:true};if(Date.parse(value.end)<=Date.now())throw new DomainError(409,'Reserva expirada.');if(result==='declined')return {reservation:value,paymentStatus:'declined',simulated:true};const changed={...value,status:'paid' as const};await tx.save(changed);await this.emit(tx,changed,'PagamentoConfirmado',correlationId);return {reservation:changed,paymentStatus:'approved',simulated:true};});}
- private emit(tx:UnitOfWork,r:Reservation,type:IntegrationEvent['type'],correlationId:string){return tx.emit({eventId:randomUUID(),version:1,type,userId:r.userId,reservationId:r.id,occurredAt:new Date().toISOString(),correlationId});}
+ list(actor:Actor){return new ListReservations(this.store,this.catalog).execute(actor);}
+ get(actor:Actor,id:string){return new GetReservation(this.store,this.catalog).execute(actor,id);}
+ capacity(actor:Actor,value:Capacity,token:string){return new ConfigureCapacity(this.store,this.catalog).execute(actor,value,token);}
+ availability(start:string,end:string){return new GetAvailability(this.store,this.catalog).execute(start,end);}
+ create(actor:Actor,input:{parkingId:string;vehicleId:string;start:string;end:string},token:string,correlationId:string){return new CreateReservation(this.store,this.catalog).execute(actor,input,token,correlationId);}
+ update(actor:Actor,id:string,input:{start:string;end:string},correlationId:string){return new UpdateReservation(this.store,this.catalog).execute(actor,id,input,correlationId);}
+ cancel(actor:Actor,id:string,correlationId:string){return new CancelReservation(this.store,this.catalog).execute(actor,id,correlationId);}
+ pay(actor:Actor,id:string,result:'approved'|'declined',correlationId:string){return new PayReservation(this.store,this.catalog).execute(actor,id,result,correlationId);}
 }

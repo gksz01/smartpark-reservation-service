@@ -8,3 +8,10 @@ describe('Clean Architecture',()=>{
  for(const file of walk('src/api').filter(f=>f.endsWith('controller.ts'))) it(file+' não acessa banco',()=>expect(readFileSync(file,'utf8')).not.toMatch(/(?:\.collection\(|\.query\(|from ['"](?:mongodb|mssql))/));
  it('organiza casos de uso em features',()=>expect(readdirSync('src/application/features').length).toBeGreaterThan(0));
 });
+
+const featureRoot='src/application/features';
+it('cada slice possui uma operação execute sem transporte ou persistência concreta',()=>{
+ const dirs=readdirSync(featureRoot,{withFileTypes:true}).filter(x=>x.isDirectory());
+ expect(dirs.length).toBeGreaterThanOrEqual(8);
+ for(const dir of dirs){const code=readFileSync(join(featureRoot,dir.name,'index.ts'),'utf8');expect(code).toContain('export class '+dir.name);expect(code.match(/\bexecute\(/g)?.length).toBeGreaterThanOrEqual(1);expect(code).not.toMatch(/from ['"].*(?:@nestjs|mongodb|mssql|infrastructure|\/api)/);}
+});
